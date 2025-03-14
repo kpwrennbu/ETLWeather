@@ -41,3 +41,15 @@ with DAG(dag_id='weather_etl_pipeline', #gives dag an id
             return response.json() 
         else: 
             raise Exception(f"Failed to fetch weather data: {response.status_code}")
+        
+    @task 
+    def transform_weather_data(weather_data): 
+        #Transform the extracted weather data
+        current_weather = weather_data['current_weather']
+        transformed_data = { 
+            'latitude': LATITUDE, 
+            'longitude': LONGITUDE, 
+            'temperature': current_weather['temperature'],
+            'windspeed': current_weather['windspeed']
+            'winddirection': current_weather['winddirection']  
+        }

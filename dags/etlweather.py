@@ -1,9 +1,10 @@
 from airflow import DAG #import DAG
-from airflow.providers.https.hooks.http import HTTPHook #For interacting with the API 
-from airflow.providers.hooks.postgres import PostgresHook #For pushing our data to Postgres
+from airflow.providers.http.hooks.http import HttpHook
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.decorators import task 
 from airflow.utils.dates import days_ago 
-
+import requests
+import json
 #Latitude and Longitude for desired Location (Cohasset Mass)
 LATITUDE = '42.2417'
 LONGITUDE = '-70.8119'
@@ -18,7 +19,7 @@ default_args={
 ##DAG 
 with DAG(dag_id='weather_etl_pipeline', #gives dag an id
          default_args=default_args, #gives it our args above
-         schedule_interval='@days', #runs daily
+         schedule_interval='@daily', #runs daily
          catchup=False
          ) as dags: 
     
@@ -28,14 +29,14 @@ with DAG(dag_id='weather_etl_pipeline', #gives dag an id
         
         #Use HTTP Hook to get connection detail from Airflow connection
         
-        http_hook = HTTPHook(http_conn_id=API_CONN_ID, method="GET")
+        http_hook = HttpHook(http_conn_id=API_CONN_ID, method="GET")
         
         # Build the API endpoint 
         # https://api.open-meteo.com/
         endpoint=f'/v1/forecast?latitude={LATITUDE}&longitude={LONGITUDE}&current_weather=true'
         
         #Make the request via the HTTP Hook 
-        response = htt_hook.run(endpoint)
+        response = http_hook.run(endpoint)
         
         if response.status_code == 200: 
             return response.json() 
@@ -50,6 +51,51 @@ with DAG(dag_id='weather_etl_pipeline', #gives dag an id
             'latitude': LATITUDE, 
             'longitude': LONGITUDE, 
             'temperature': current_weather['temperature'],
-            'windspeed': current_weather['windspeed']
-            'winddirection': current_weather['winddirection']  
+            'windspeed': current_weather['windspeed'],
+            'winddirection': current_weather['winddirection'],
+            'weathercode': current_weather['weathercode']
         }
+        return transformed_data
+    @task 
+    def load_weather_data(transformed_data): 
+        #Load transformed data into PosgreSQL
+        pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+        conn = pg_hook.get_conn() 
+        cursor = conn.cursor() 
+        
+        #Create table if it doesnt exist
+        cursor.execute(
+            """ 
+            CREATE TABLE IF NOT EXISTS weather_data ( 
+                latitude FLOAT,
+                longitude FLOAT, 
+                temperature FLOAT, 
+                windspeed FLOAT, 
+                winddirection FLOAT, 
+                weathercode INT
+                timestamp TIMESTAMP DEFAULT CURRENT TIMESTAMP   
+            );
+            """)
+        
+        #insert transformed data into the table 
+        cursor.execute(
+        """
+        INSERT INTO weather_data (latitude, longitude, temperature, windspeed, winddirection, weathercode)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """, ( 
+                transformed_data['latitude'], 
+                transformed_data['longitude'],
+                transformed_data['temperature'], 
+                transformed_data['windspeed'], 
+                transformed_data['winddirection'],
+                transformed_data['weathercode']  
+            )
+        )
+        
+        conn.commit()
+        cursor.close()
+        
+    # DAG Workflow - ETL Pipeline 
+    weather_data = extract_weather_data() 
+    transformed_data = transform_weather_data(weather_data)
+    load_weather_data(transformed_data)
